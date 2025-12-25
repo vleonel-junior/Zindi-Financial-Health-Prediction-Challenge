@@ -105,7 +105,7 @@ def main():
     )
     
     # Configure AutoGluon to use Mitra with Fine-Tuning
-    # Strategy: Deep fine-tuning for maximum adaptation, single fold to manage memory
+    # Strategy: Deep fine-tuning for maximum adaptation, no bagging to save memory
     predictor.fit(
         train_data,
         hyperparameters={
@@ -115,7 +115,7 @@ def main():
             }
         },
         time_limit=TIME_LIMIT,
-        num_bag_folds=1,  # CRITICAL: No bagging (single model) to save massive memory
+        num_bag_folds=0,  # 0 = No bagging (single model) to save memory
         num_stack_levels=0  # No stacking
     )
     
