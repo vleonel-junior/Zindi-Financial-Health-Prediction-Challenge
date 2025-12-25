@@ -110,17 +110,17 @@ def main():
         hyperparameters={
             'MITRA': {
                 'fine_tune': True, 
-                'fine_tune_steps': 5,  # Reduced from 10 to save memory
-                'max_samples_support': 256  # Further reduced: 512→256 to lower memory estimate
+                'fine_tune_steps': 5  # Reduced from 10 to save memory
+                # max_samples_support removed: not a valid MITRA parameter
             }
         },
         time_limit=TIME_LIMIT,
         presets='medium_quality',  # Changed from best_quality to reduce bagging
-        num_bag_folds=3,  # Reduced from default 8 to save memory
+        num_bag_folds=2,  # Further reduced: 3→2 to save more memory
         num_bag_sets=1,
         num_stack_levels=0,  # Disable stacking to save memory
         ag_args_fit={
-            'ag.max_memory_usage_ratio': 0.85  # Increased from 0.7 to allow training (was blocking startup)
+            'ag.max_memory_usage_ratio': 1.0  # Allow full memory usage (AutoGluon will manage internally)
         }
     )
     
