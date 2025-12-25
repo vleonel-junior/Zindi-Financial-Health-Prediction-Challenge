@@ -36,9 +36,7 @@ def load_and_process():
         df[cols_to_fill] = df[cols_to_fill].fillna("Unknown")
         
         if 'personal_income' in df.columns and 'owner_age' in df.columns:
-            # Log Transform Income to handle skew (New Preprocessing Step)
-            df['personal_income_log'] = np.log1p(df['personal_income'])
-            df['income_per_age'] = df['personal_income_log'] / (df['owner_age'].replace(0, 1))
+            df['income_per_age'] = df['personal_income'] / (df['owner_age'].replace(0, 1))
             
         yes_vals = ['Yes', 'Have now', 'have now']
         access_cols = ['has_loan_account', 'has_internet_banking', 'has_debit_card', 'has_mobile_money']
@@ -55,18 +53,14 @@ def main():
     y = train[TARGET_COL]
     X_test = test.drop(columns=[ID_COL])
     
-    # Preprocessing Upgrade: Native Categorical Handling
-    # Instead of Label Encoding, we fill NaNs and ensure string type for CatBoost
-    cat_cols = X.select_dtypes(include=['object']).columns.tolist()
-    
-    # Fill NA specifically for Native support if needed (CatBoost handles NaN, but "Unknown" string is safer)
-    X[cat_cols] = X[cat_cols].fillna("Unknown").astype(str)
-    X_test[cat_cols] = X_test[cat_cols].fillna("Unknown").astype(str)
-    
-    # Identify indices for CatBoost
-    cat_features_indices = [X.columns.get_loc(c) for c in cat_cols]
-    
-    print(f"🐈 Using Native Categorical Features: {cat_cols}")
+    # Label Encode (CatBoost can handle raw, but for Ensemble consistency we encode everything)
+    cat_cols = X.select_dtypes(include=['object']).columns
+    for col in cat_cols:
+        le = LabelEncoder()
+        combined = pd.concat([X[col], X_test[col]], axis=0).astype(str)
+        le.fit(combined)
+        X[col] = le.transform(X[col].astype(str))
+        X_test[col] = le.transform(X_test[col].astype(str))
         
     target_le = LabelEncoder()
     y_encoded = target_le.fit_transform(y)
@@ -93,13 +87,7 @@ def main():
     # Finding indices of original cat columns:
     # They are the ones we looped over.
     
-    # Pass cat_features to the classifier constructor
-    model = CatBoostClassifier(
-        random_state=SEED, 
-        verbose=0, 
-        allow_writing_files=False,
-        cat_features=cat_features_indices 
-    )
+    model = CatBoostClassifier(random_state=SEED, verbose=0, allow_writing_files=False)
     
     print(f"🔎 Starting Randomized Search for CatBoost ({N_ITER} iters)...")
     search = RandomizedSearchCV(
