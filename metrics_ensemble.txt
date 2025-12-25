@@ -1,0 +1,13 @@
+              precision    recall  f1-score   support
+
+        High       0.89      0.63      0.74        94
+         Low       0.89      0.96      0.92      1256
+      Medium       0.84      0.75      0.79       574
+
+    accuracy                           0.88      1924
+   macro avg       0.87      0.78      0.82      1924
+weighted avg       0.88      0.88      0.87      1924
+
+
+Optimized High Class Weight: 2.061224489795918
+Optimized High Class F1: 0.7647058823529411
