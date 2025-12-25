@@ -105,8 +105,9 @@ def main():
     
     # Generate Out-of-Fold Probs for EACH model
     # This allows us to test weight combinations without retraining
-    models = [clf1, clf2, clf3, clf4, clf5]
-    model_names = ['LGBM', 'XGB', 'Cat', 'RF', 'DecisionTree']
+    # Pruning: Removing RF and DT to focus on Gradient Boosting Trinity
+    models = [clf1, clf2, clf3]
+    model_names = ['LGBM', 'XGB', 'Cat']
     oof_preds = []
     
     for name, clf in zip(model_names, models):
@@ -121,10 +122,12 @@ def main():
     
     # Dirichlet distribution is good for sampling proper convex weights (sum=1), 
     # but simple random uniform also works for non-convex soft voting.
-    print("   -> Running Random Weight Search (2000 iterations)...")
-    for _ in range(2000):
-        # Sample random weights
-        weights = np.random.dirichlet(np.ones(len(models)), size=1)[0]
+    print("   -> Running Random Weight Search (3000 iterations)...")
+    for _ in range(3000):
+        # Sample random weights from Dirichlet
+        # We know LGBM is strong, so let's use a concentration parameter > 1 for it
+        # Alphas: [3.0, 2.0, 3.0] favors boosting (LGBM, XGB, Cat)
+        weights = np.random.dirichlet([3.0, 2.0, 3.0], size=1)[0]
         
         # Weighted Average
         weighted_sum = np.zeros_like(oof_preds[0])
@@ -144,9 +147,9 @@ def main():
     # Re-normalize best weights just in case
     
     # 3. Create Final Ensemble with Optimized Weights
-    print("🤖 Initializing Final Ensemble with Optimized Weights...")
+    print("🤖 Initializing Final Ensemble with Optimized Weights (Boosting Only)...")
     eclf = VotingClassifier(
-        estimators=[('lgbm', clf1), ('xgb', clf2), ('cat', clf3), ('rf', clf4), ('dt', clf5)],
+        estimators=[('lgbm', clf1), ('xgb', clf2), ('cat', clf3)],
         voting='soft',
         weights=best_weights
     )
