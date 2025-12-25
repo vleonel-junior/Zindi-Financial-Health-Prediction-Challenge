@@ -111,7 +111,7 @@ def main():
             'MITRA': {
                 'fine_tune': True, 
                 'fine_tune_steps': 5,  # Reduced from 10 to save memory
-                'max_samples_support': 512  # Explicitly set low to avoid OOM
+                'max_samples_support': 256  # Further reduced: 512→256 to lower memory estimate
             }
         },
         time_limit=TIME_LIMIT,
@@ -120,7 +120,7 @@ def main():
         num_bag_sets=1,
         num_stack_levels=0,  # Disable stacking to save memory
         ag_args_fit={
-            'ag.max_memory_usage_ratio': 0.7  # Use only 70% of available memory as safety buffer
+            'ag.max_memory_usage_ratio': 0.85  # Increased from 0.7 to allow training (was blocking startup)
         }
     )
     
