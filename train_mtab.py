@@ -104,24 +104,19 @@ def main():
         path=SAVE_PATH
     )
     
-    # Configure AutoGluon to use Mitra with Fine-Tuning (Optimized for Kaggle GPU)
+    # Configure AutoGluon to use Mitra with Fine-Tuning
+    # Strategy: Deep fine-tuning for maximum adaptation, single fold to manage memory
     predictor.fit(
         train_data,
         hyperparameters={
             'MITRA': {
-                'fine_tune': True, 
-                'fine_tune_steps': 5  # Reduced from 10 to save memory
-                # max_samples_support removed: not a valid MITRA parameter
+                'fine_tune': True,  # ESSENTIAL for dataset adaptation
+                'fine_tune_steps': 15  # Increased from 3 to 15 for deeper adaptation
             }
         },
         time_limit=TIME_LIMIT,
-        presets='medium_quality',  # Changed from best_quality to reduce bagging
-        num_bag_folds=2,  # Further reduced: 3→2 to save more memory
-        num_bag_sets=1,
-        num_stack_levels=0,  # Disable stacking to save memory
-        ag_args_fit={
-            'ag.max_memory_usage_ratio': 1.0  # Allow full memory usage (AutoGluon will manage internally)
-        }
+        num_bag_folds=1,  # CRITICAL: No bagging (single model) to save massive memory
+        num_stack_levels=0  # No stacking
     )
     
     print("✅ Training Completed!")
