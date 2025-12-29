@@ -1,7 +1,7 @@
 """
-Ensemble LGBM + TabPFN V2: Both with RAW Categorical Handling
-LGBM uses native categorical_feature parameter (no Label Encoding)
-TabPFN uses internal preprocessing (V3 proven best)
+Ensemble LGBM + TabPFN V2 (FIXED): Both with RAW Categorical Handling
+LGBM uses native categorical_feature with category dtype (CRITICAL FIX)
+TabPFN uses internal preprocessing (V3)
 """
 import pandas as pd
 import numpy as np
@@ -40,7 +40,7 @@ ID_COL = 'ID'
 def ultra_raw_preprocessing_shared(train_df, test_df):
     """
     ULTRA-RAW: Same preprocessing for both LGBM and TabPFN
-    Only fill missing, no encoding at all
+    Only fill missing + convert to category dtype for LGBM compatibility
     """
     train = train_df.drop(columns=[ID_COL, TARGET_COL])
     test = test_df.drop(columns=[ID_COL])
@@ -56,8 +56,16 @@ def ultra_raw_preprocessing_shared(train_df, test_df):
             train[col] = train[col].fillna(median_val)
             test[col] = test[col].fillna(median_val)
     
-    # Identify categorical columns for LGBM
+    # Identify categorical columns
     cat_cols = train.select_dtypes(include=['object']).columns.tolist()
+    
+    # CRITICAL FIX: Convert object → category dtype for LGBM
+    # LGBM requires 'category' dtype, not 'object' string
+    for col in cat_cols:
+        train[col] = train[col].astype('category')
+        test[col] = test[col].astype('category')
+    
+    print(f"   Converted {len(cat_cols)} columns to category dtype for LGBM")
     
     return train, test, target, cat_cols
 
@@ -94,13 +102,13 @@ def main():
     
     # Shared ultra-raw preprocessing
     print("🔧 Ultra-Raw Preprocessing (shared for both models)...")
-    print("   LGBM: Native categorical handling via categorical_feature")
+    print("   LGBM: Native categorical via categorical_feature (category dtype)")
     print("   TabPFN: Internal preprocessing (V3)")
     
     X, X_test, y, cat_cols = ultra_raw_preprocessing_shared(train, test)
     
-    print(f"\n   Categorical columns ({len(cat_cols)}): {cat_cols[:5]}...")
-    print(f"   Features: {X.shape[1]}")
+    print(f"   Categorical columns: {len(cat_cols)}")
+    print(f"   Total features: {X.shape[1]}")
     
     # Encode target
     target_le = LabelEncoder()
@@ -131,13 +139,13 @@ def main():
     lgbm_params.update({
         'random_state': SEED,
         'verbose': -1,
-        'class_weight': 'balanced',
-        'categorical_feature': cat_cols  # CRITICAL: Native categorical handling
+        'class_weight': 'balanced'
     })
     
     lgbm = LGBMClassifier(**lgbm_params)
+    # categorical_feature passed to fit(), not __init__
     lgbm.fit(X_train, y_train, categorical_feature=cat_cols)
-    print("   ✅ LGBM trained (categorical_feature enabled)")
+    print("   ✅ LGBM trained (category dtype enabled)")
     
     # Train TabPFN V3 (raw)
     print(f"\n🚀 Training TabPFN V3 (RAW) on {DEVICE.upper()}...")
@@ -159,7 +167,7 @@ def main():
     ensemble_val_preds = ensemble_val_proba.argmax(axis=1)
     val_f1 = f1_score(y_val, ensemble_val_preds, average='macro')
     
-    print(f"\n📋 Ensemble V2 (Both Raw) Validation Report:")
+    print(f"\n📋 Ensemble V2 (Both Raw - FIXED) Validation Report:")
     print(f"   Validation F1 (Macro): {val_f1:.4f}")
     print(classification_report(y_val, ensemble_val_preds, target_names=target_le.classes_))
     
@@ -188,7 +196,6 @@ def main():
     print("\n✅ Saved to submission_ensemble_v2_both_raw.csv")
     print(f"   Prediction distribution: {pd.Series(ensemble_labels).value_counts().to_dict()}")
     print(f"\n🎯 V2 Strategy: Both models use RAW categorical handling")
-    print(f"   Expected gain: +0.005-0.010 vs V1 (less encoding noise)")
 
 if __name__ == "__main__":
     main()
