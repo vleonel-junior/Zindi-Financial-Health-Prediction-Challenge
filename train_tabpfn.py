@@ -117,10 +117,7 @@ def main():
     print(f"\n🚀 Training Real-TabPFN-2.5 on {DEVICE.upper()}...")
     print("   (This may take a few minutes on first run due to model download)")
     
-    clf = TabPFNClassifier(
-        device=DEVICE,
-        N_ensemble_configurations=32  # Default ensemble size
-    )
+    clf = TabPFNClassifier(device=DEVICE)
     
     clf.fit(X_train.values, y_train)
     print("✅ Training Complete!")
@@ -136,7 +133,7 @@ def main():
     
     # Full train for final submission
     print("\n🔄 Retraining on full dataset for final predictions...")
-    clf_full = TabPFNClassifier(device=DEVICE, N_ensemble_configurations=32)
+    clf_full = TabPFNClassifier(device=DEVICE)
     clf_full.fit(X.values, y_encoded)
     
     # Predict on test
