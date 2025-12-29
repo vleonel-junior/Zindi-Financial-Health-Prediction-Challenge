@@ -67,20 +67,31 @@ def main():
     print("   (If this fails, TabPFN needs manual encoding)")
     
     try:
-        clf = TabPFNClassifier(device=DEVICE)
-        
         # Validation split
         X_train, X_val, y_train, y_val = train_test_split(
             X, y_encoded, test_size=0.2, random_state=SEED, stratify=y_encoded
         )
         
-        # Try fitting - will this work with strings?
+        # Train on validation split
+        clf = TabPFNClassifier(device=DEVICE)
         clf.fit(X_train.values, y_train)
         
         print("✅ SUCCESS! TabPFN accepted raw categorical data!")
         print("   TabPFN has internal preprocessing for categories.")
         
+        # Local validation metrics
+        from sklearn.metrics import f1_score, classification_report
+        
+        print("\n📊 Validating...")
+        val_preds = clf.predict(X_val.values)
+        val_f1 = f1_score(y_val, val_preds, average='macro')
+        print(f"   Validation F1 (Macro): {val_f1:.4f}")
+        
+        print("\n📋 Classification Report:")
+        print(classification_report(y_val, val_preds, target_names=target_le.classes_))
+        
         # Full train
+        print("\n🔄 Retraining on full dataset for final predictions...")
         clf_full = TabPFNClassifier(device=DEVICE)
         clf_full.fit(X.values, y_encoded)
         
