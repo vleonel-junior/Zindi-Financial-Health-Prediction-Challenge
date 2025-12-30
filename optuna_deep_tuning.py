@@ -29,7 +29,7 @@ except ImportError:
 
 # Config
 SEED = 42
-N_TRIALS = 100  # High number of trials for deep search
+N_TRIALS = 50  # Reduced to 50 for faster execution
 ID_COL = 'ID'
 TARGET_COL = 'Target'
 N_FOLDS = 5
@@ -104,7 +104,10 @@ def objective_xgb(trial, X, y):
         'scale_pos_weight': trial.suggest_float('scale_pos_weight', 1.0, 10.0), # For imbalance
         'random_state': SEED,
         'verbosity': 0,
-        'tree_method': 'gpu_hist' if DEVICE == 'cuda' else 'hist'
+        # XGBoost < 2.0 uses 'gpu_hist', newer versions use 'hist' + device='cuda'
+        # We'll use a safer approach detection or 'hist' with device
+        'tree_method': 'hist',
+        'device': 'cuda' if DEVICE == 'cuda' else 'cpu'
     }
     
     cv = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
@@ -132,7 +135,8 @@ def objective_cat(trial, X, y, cat_cols):
         'auto_class_weights': trial.suggest_categorical('auto_class_weights', ['Balanced', 'SqrtBalanced']),
         'random_state': SEED,
         'verbose': 0,
-        'task_type': 'GPU' if DEVICE == 'cuda' else 'CPU'
+        'task_type': 'GPU' if DEVICE == 'cuda' else 'CPU',
+        'devices': '0' if DEVICE == 'cuda' else None
     }
     
     cv = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
