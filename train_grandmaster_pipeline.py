@@ -1,5 +1,5 @@
 # %% --- 1. INSTALLATION ET IMPORTS ---
-# !pip install tabpfn --quiet
+!pip install tabpfn --quiet
 
 import pandas as pd
 import numpy as np
@@ -18,205 +18,153 @@ from sklearn.utils.class_weight import compute_class_weight
 
 warnings.filterwarnings('ignore')
 
-# --- CONFIGURATION GLOBALE ---
+# --- CONFIGURATION ---
 SEED = 42
 N_FOLDS = 5
-OPTUNA_TIME_BUDGET = 1800  # 30 minutes de recherche (en secondes)
+MAX_TRIALS = 50
+MAX_TIME = 3600  # 1 heure max par modèle
 USE_GPU = torch.cuda.is_available()
 
 # %% --- 2. FONCTIONS DE PRÉPARATION ---
 
 def engineer_features(df):
-    """Ingénierie de variables spécifique aux PME"""
     df = df.copy()
-    
-    # 1. Ratios financiers
     df['business_expenses'] = df['business_expenses'].replace(0, 1)
     df['rev_per_expense'] = df['business_turnover'] / df['business_expenses']
     df['profit_margin'] = (df['business_turnover'] - df['business_expenses']) / df['business_turnover']
-    df['income_efficiency'] = df['personal_income'] / df['business_expenses']
-    
-    # 2. Log transform
-    monetary_cols = ['personal_income', 'business_expenses', 'business_turnover']
-    for col in monetary_cols:
+    for col in ['personal_income', 'business_expenses', 'business_turnover']:
         df[f'log_{col}'] = np.log1p(df[col])
     
-    # 3. Traitement sémantique des attitudes
     att_cols = [c for c in df.columns if 'attitude' in c.lower() or 'perception' in c.lower()]
     if att_cols:
-        # Mapping explicite pour échelle de Likert (Strongly Disagree -> Strongly Agree)
-        mapping = {
-            'strongly disagree': 1,
-            'disagree': 2,
-            'neither agree nor disagree': 3,
-            'agree': 4,
-            'strongly agree': 5,
-            'nan': 3 # On traite les vides comme neutres
-        }
-        
-        # On applique le mapping sur les colonnes converties en minuscules
+        likert_map = {'strongly disagree': 1, 'disagree': 2, 'neither agree nor disagree': 3, 
+                      'neutral': 3, 'agree': 4, 'strongly agree': 5, 'nan': 3}
+        temp_att = pd.DataFrame()
         for col in att_cols:
-            df[f'num_{col}'] = df[col].astype(str).str.lower().str.strip().map(mapping).fillna(3)
-        
-        # On calcule les stats sur les nouvelles colonnes numériques
-        num_att_cols = [f'num_{c}' for c in att_cols]
-        df['att_mean'] = df[num_att_cols].mean(axis=1)
-        df['att_std'] = df[num_att_cols].std(axis=1)
-        
-        # Optionnel : Supprimer les colonnes temporaires num_ si on ne veut pas les garder
-        # df.drop(columns=num_att_cols, inplace=True)
-
+            temp_att[col] = df[col].astype(str).str.lower().str.strip().map(likert_map).fillna(3)
+        df['att_mean'] = temp_att.mean(axis=1)
+        df['att_std'] = temp_att.std(axis=1)
     return df
 
-# %% --- 3. OPTIMISATION OPTUNA (CATBOOST) ---
+def clean_categorical_nan(df, cat_cols):
+    df = df.copy()
+    for col in cat_cols:
+        df[col] = df[col].astype(str).replace(['nan', 'NaN', 'None'], 'missing')
+    return df
 
-def tune_catboost(X, y, cat_features, weights):
-    def objective(trial):
+# %% --- 3. TUNING DES MODÈLES ---
+
+def tune_models(X, y, X_enc, cat_features, weights, cw_dict):
+    # --- Tuning CatBoost ---
+    def cb_objective(trial):
         params = {
             "iterations": 1000,
-            "learning_rate": trial.suggest_float("learning_rate", 1e-3, 0.1, log=True),
+            "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.1, log=True),
             "depth": trial.suggest_int("depth", 4, 10),
-            "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1, 10),
-            "random_strength": trial.suggest_float("random_strength", 1e-8, 10, log=True),
-            "bagging_temperature": trial.suggest_float("bagging_temperature", 0, 1),
-            "border_count": trial.suggest_int("border_count", 32, 255),
+            "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1, 15),
             "task_type": "GPU" if USE_GPU else "CPU",
             "loss_function": "MultiClass",
             "eval_metric": "TotalF1",
-            "class_weights": weights,
-            "random_seed": SEED,
-            "verbose": 0,
-            "allow_writing_files": False
+            "class_weights": list(weights),
+            "random_seed": SEED, "verbose": 0
         }
-        
-        # Ajout du device pour GPU si nécessaire (CatBoost gère souvent tout seul avec task_type='GPU', mais 'devices' aide parfois)
-        if USE_GPU:
-             params['devices'] = '0'
-
         skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=SEED)
-        cv_scores = []
-        
+        scores = []
         for tr_idx, vl_idx in skf.split(X, y):
-            X_tr, X_vl = X.iloc[tr_idx], X.iloc[vl_idx]
-            y_tr, y_vl = y[tr_idx], y[vl_idx]
-            
-            model = CatBoostClassifier(**params)
-            model.fit(X_tr, y_tr, eval_set=(X_vl, y_vl), cat_features=cat_features, early_stopping_rounds=50)
-            
-            preds = model.predict(X_vl)
-            cv_scores.append(f1_score(y_vl, preds, average='weighted'))
-            
-        return np.mean(cv_scores)
+            m = CatBoostClassifier(**params)
+            m.fit(X.iloc[tr_idx], y[tr_idx], eval_set=(X.iloc[vl_idx], y[vl_idx]), 
+                  cat_features=cat_features, early_stopping_rounds=50)
+            scores.append(f1_score(y[vl_idx], m.predict(X.iloc[vl_idx]), average='weighted'))
+        return np.mean(scores)
 
-    study = optuna.create_study(direction="maximize")
-    study.optimize(objective, timeout=OPTUNA_TIME_BUDGET)
-    print(f"Meilleur F1 CatBoost : {study.best_value:.4f}")
-    return study.best_params
+    # --- Tuning XGBoost ---
+    def xgb_objective(trial):
+        params = {
+            "n_estimators": 1000,
+            "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.1, log=True),
+            "max_depth": trial.suggest_int("max_depth", 3, 10),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            "tree_method": 'gpu_hist' if USE_GPU else 'hist',
+            "objective": 'multi:softprob', "num_class": 3, "random_state": SEED
+        }
+        skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=SEED)
+        scores = []
+        for tr_idx, vl_idx in skf.split(X_enc, y):
+            m = XGBClassifier(**params)
+            m.fit(X_enc.iloc[tr_idx], y[tr_idx], sample_weight=pd.Series(y[tr_idx]).map(cw_dict))
+            scores.append(f1_score(y[vl_idx], m.predict(X_enc.iloc[vl_idx]), average='weighted'))
+        return np.mean(scores)
 
-# %% --- 4. PIPELINE DE STACKING ---
+    print("--- Tuning CatBoost (50 trials / 1h) ---")
+    cb_study = optuna.create_study(direction="maximize")
+    cb_study.optimize(cb_objective, n_trials=MAX_TRIALS, timeout=MAX_TIME)
 
-def run_grandmaster_pipeline(train_path, test_path):
-    # 1. Chargement et Preprocessing
-    train = pd.read_csv(train_path)
-    test = pd.read_csv(test_path)
-    
+    print("--- Tuning XGBoost (50 trials / 1h) ---")
+    xgb_study = optuna.create_study(direction="maximize")
+    xgb_study.optimize(xgb_objective, n_trials=MAX_TRIALS, timeout=MAX_TIME)
+
+    return cb_study.best_params, xgb_study.best_params
+
+# %% --- 4. PIPELINE PRINCIPALE ---
+
+def run_pipeline(train_path, test_path):
+    train, test = pd.read_csv(train_path), pd.read_csv(test_path)
     le = LabelEncoder()
     y = le.fit_transform(train['Target'])
     
-    train = engineer_features(train)
-    test = engineer_features(test)
-    
-    X = train.drop(columns=['ID', 'Target'])
-    X_test = test.drop(columns=['ID'])
-    cat_features = X.select_dtypes(include=['object']).columns.tolist()
+    train, test = engineer_features(train), engineer_features(test)
+    X, X_test = train.drop(columns=['ID', 'Target']), test.drop(columns=['ID'])
+    cat_features = X.select_dtypes(include=['object', 'category']).columns.tolist()
+    X, X_test = clean_categorical_nan(X, cat_features), clean_categorical_nan(X_test, cat_features)
 
-    # Poids pour gérer le déséquilibre
     weights = compute_class_weight('balanced', classes=np.unique(y), y=y)
-    class_weights_dict = dict(zip(np.unique(y), weights))
+    cw_dict = dict(zip(np.unique(y), weights))
 
-    # 2. Tuning Optuna
-    print("\n--- Phase 1 : Optimisation CatBoost ---")
-    best_cat_params = tune_catboost(X, y, cat_features, weights)
-
-    # 3. Training Cross-Validation
-    print("\n--- Phase 2 : Entraînement OOF Stacking ---")
-    oof_cat = np.zeros((len(X), 3)) 
-    oof_xgb = np.zeros((len(X), 3))
-    oof_pfn = np.zeros((len(X), 3))
-    
-    pred_cat = np.zeros((len(X_test), 3))
-    pred_xgb = np.zeros((len(X_test), 3))
-    pred_pfn = np.zeros((len(X_test), 3))
-
-    # Pré-encodage pour XGB
+    # Encoding pour Tuning XGB
     oe = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
     X_enc = X.copy()
-    X_test_enc = X_test.copy()
-    X_enc[cat_features] = oe.fit_transform(X[cat_features].astype(str))
-    X_test_enc[cat_features] = oe.transform(X_test[cat_features].astype(str))
+    X_enc[cat_features] = oe.fit_transform(X[cat_features])
 
+    # PHASE TUNING
+    best_cb, best_xgb = tune_models(X, y, X_enc, cat_features, weights, cw_dict)
+
+    # PHASE STACKING
+    print("--- Entraînement Final Stacking ---")
+    X_test_enc = X_test.copy()
+    X_test_enc[cat_features] = oe.transform(X_test[cat_features])
+    
+    oof_cat, oof_xgb, oof_pfn = [np.zeros((len(X), 3)) for _ in range(3)]
+    pred_cat, pred_xgb, pred_pfn = [np.zeros((len(X_test), 3)) for _ in range(3)]
     skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
 
-    for fold, (tr_idx, vl_idx) in enumerate(skf.split(X, y)):
-        print(f"FOLD {fold+1}/{N_FOLDS}")
-        X_tr, X_vl = X.iloc[tr_idx], X.iloc[vl_idx]
-        X_tr_enc, X_vl_enc = X_enc.iloc[tr_idx], X_enc.iloc[vl_idx]
-        y_tr, y_vl = y[tr_idx], y[vl_idx]
+    for tr_idx, vl_idx in skf.split(X, y):
+        # CatBoost
+        m_cb = CatBoostClassifier(**best_cb, iterations=2000, class_weights=list(weights), 
+                                  task_type="GPU" if USE_GPU else "CPU", verbose=0)
+        m_cb.fit(X.iloc[tr_idx], y[tr_idx], eval_set=(X.iloc[vl_idx], y[vl_idx]), cat_features=cat_features)
+        oof_cat[vl_idx] = m_cb.predict_proba(X.iloc[vl_idx])
+        pred_cat += m_cb.predict_proba(X_test) / N_FOLDS
 
-        # --- CATBOOST (Optimisé) ---
-        cb_params = {**best_cat_params, "iterations": 2000, "task_type": "GPU" if USE_GPU else "CPU", 
-                     "class_weights": weights, "random_seed": SEED, "verbose": 0}
-        if USE_GPU:
-             cb_params['devices'] = '0'
-             
-        m_cat = CatBoostClassifier(**cb_params)
-        m_cat.fit(X_tr, y_tr, eval_set=(X_vl, y_vl), cat_features=cat_features, early_stopping_rounds=100)
-        oof_cat[vl_idx] = m_cat.predict_proba(X_vl)
-        pred_cat += m_cat.predict_proba(X_test) / N_FOLDS
-
-        # --- XGBOOST ---
-        xgb_params = {
-            'objective': 'multi:softprob', 
-            'num_class': 3, 
-            'n_estimators': 1000, 
-            'learning_rate': 0.05, 
-            'max_depth': 6
-        }
-        
-        if USE_GPU:
-            xgb_params.update({'device': 'cuda', 'tree_method': 'hist'})
-        else:
-            xgb_params.update({'tree_method': 'hist'})
-
-        m_xgb = XGBClassifier(**xgb_params)
-        m_xgb.fit(X_tr_enc, y_tr, sample_weight=pd.Series(y_tr).map(class_weights_dict), 
-                  eval_set=[(X_vl_enc, y_vl)], verbose=False, early_stopping_rounds=50)
-        
-        oof_xgb[vl_idx] = m_xgb.predict_proba(X_vl_enc)
+        # XGBoost
+        m_xgb = XGBClassifier(**best_xgb, n_estimators=2000)
+        m_xgb.fit(X_enc.iloc[tr_idx], y[tr_idx], sample_weight=pd.Series(y[tr_idx]).map(cw_dict))
+        oof_xgb[vl_idx] = m_xgb.predict_proba(X_enc.iloc[vl_idx])
         pred_xgb += m_xgb.predict_proba(X_test_enc) / N_FOLDS
 
-        # --- TabPFN (v2.5) ---
-        # TabPFN v2.5 gère nativement de plus gros datasets et l'optimisation GPU
-        m_pfn = TabPFNClassifier(device='cuda' if USE_GPU else 'cpu', random_state=SEED)
-        
-        # On utilise tout le dataset d'entraînement maintenant
-        m_pfn.fit(X_tr, y_tr)
-        oof_pfn[vl_idx] = m_pfn.predict_proba(X_vl)
+        # TabPFN
+        m_pfn = TabPFNClassifier(device='cuda' if USE_GPU else 'cpu', N_ensemble_configurations=16)
+        m_pfn.fit(X.iloc[tr_idx[:1500]], y[tr_idx[:1500]])
+        oof_pfn[vl_idx] = m_pfn.predict_proba(X.iloc[vl_idx])
         pred_pfn += m_pfn.predict_proba(X_test) / N_FOLDS
 
-    # 4. MÉTA-MODÈLE (Stacking)
-    X_stack_train = np.hstack([oof_cat, oof_xgb, oof_pfn])
-    X_stack_test = np.hstack([pred_cat, pred_xgb, pred_pfn])
+    # META-LEARNER
+    X_stack_tr = np.hstack([oof_cat, oof_xgb, oof_pfn])
+    X_stack_ts = np.hstack([pred_cat, pred_xgb, pred_pfn])
+    meta_m = LogisticRegression(class_weight='balanced').fit(X_stack_tr, y)
     
-    meta_model = LogisticRegression(class_weight='balanced')
-    meta_model.fit(X_stack_train, y)
-    
-    final_preds = meta_model.predict(X_stack_test)
-    
-    # 5. Export
-    submission = pd.DataFrame({"ID": test["ID"], "Target": le.inverse_transform(final_preds)})
-    submission.to_csv("submission_optuna_stacking.csv", index=False)
-    print("\n✅ Terminé : submission_optuna_stacking.csv générée.")
+    pd.DataFrame({"ID": test["ID"], "Target": le.inverse_transform(meta_m.predict(X_stack_ts))}).to_csv("submission_tuned.csv", index=False)
+    print("🚀 Fichier submission_tuned.csv prêt !")
 
 if __name__ == "__main__":
-    run_grandmaster_pipeline('Train.csv', 'Test.csv')
+    run_pipeline('Train.csv', 'Test.csv')
