@@ -26,7 +26,7 @@ sns.set_style('whitegrid')
 # --- CONSTANTES ---
 SEED = 42
 N_FOLDS = 5
-DO_OPTIMIZE = False  # Mettre à True pour lancer la recherche d'hyperparamètres (long)
+DO_OPTIMIZE = True  # Mettre à True pour lancer la recherche d'hyperparamètres (long)
 USE_GPU = True       # ⚠️ Mettre à True si vous êtes sur Colab ou avez un GPU NVIDIA
 
 # %% --- 2. FEATURE ENGINEERING ---

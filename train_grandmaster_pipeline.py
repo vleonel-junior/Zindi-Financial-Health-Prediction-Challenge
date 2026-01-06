@@ -29,24 +29,43 @@ USE_GPU = torch.cuda.is_available()
 def engineer_features(df):
     """Ingénierie de variables spécifique aux PME"""
     df = df.copy()
-    df['business_expenses'] = df['business_expenses'].replace(0, 1)
     
-    # Ratios et marges
+    # 1. Ratios financiers
+    df['business_expenses'] = df['business_expenses'].replace(0, 1)
     df['rev_per_expense'] = df['business_turnover'] / df['business_expenses']
     df['profit_margin'] = (df['business_turnover'] - df['business_expenses']) / df['business_turnover']
     df['income_efficiency'] = df['personal_income'] / df['business_expenses']
     
-    # Log transform pour les colonnes monétaires
+    # 2. Log transform
     monetary_cols = ['personal_income', 'business_expenses', 'business_turnover']
     for col in monetary_cols:
         df[f'log_{col}'] = np.log1p(df[col])
     
-    # Agrégation des attitudes psychométriques
+    # 3. Traitement sémantique des attitudes
     att_cols = [c for c in df.columns if 'attitude' in c.lower() or 'perception' in c.lower()]
     if att_cols:
-        df['att_mean'] = df[att_cols].mean(axis=1)
-        df['att_std'] = df[att_cols].std(axis=1)
+        # Mapping explicite pour échelle de Likert (Strongly Disagree -> Strongly Agree)
+        mapping = {
+            'strongly disagree': 1,
+            'disagree': 2,
+            'neither agree nor disagree': 3,
+            'agree': 4,
+            'strongly agree': 5,
+            'nan': 3 # On traite les vides comme neutres
+        }
         
+        # On applique le mapping sur les colonnes converties en minuscules
+        for col in att_cols:
+            df[f'num_{col}'] = df[col].astype(str).str.lower().str.strip().map(mapping).fillna(3)
+        
+        # On calcule les stats sur les nouvelles colonnes numériques
+        num_att_cols = [f'num_{c}' for c in att_cols]
+        df['att_mean'] = df[num_att_cols].mean(axis=1)
+        df['att_std'] = df[num_att_cols].std(axis=1)
+        
+        # Optionnel : Supprimer les colonnes temporaires num_ si on ne veut pas les garder
+        # df.drop(columns=num_att_cols, inplace=True)
+
     return df
 
 # %% --- 3. OPTIMISATION OPTUNA (CATBOOST) ---
