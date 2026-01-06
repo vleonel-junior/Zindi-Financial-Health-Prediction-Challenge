@@ -208,7 +208,7 @@ def train_model_cv(X, y, X_test, model_type='catboost', class_weights_dict=None,
             
             # GPU Check
             if USE_GPU:
-                params.update({'tree_method': 'gpu_hist', 'device': 'cuda'})
+                params.update({'tree_method': 'hist', 'device': 'cuda'})
 
             model = XGBClassifier(**params)
             model.fit(X_train, y_train, sample_weight=sample_weights, 
