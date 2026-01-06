@@ -1,1 +1,0 @@
-{"random_strength": 1, "learning_rate": 0.03, "l2_leaf_reg": 1, "iterations": 2000, "depth": 8, "bagging_temperature": 0, "auto_class_weights": "SqrtBalanced"}
