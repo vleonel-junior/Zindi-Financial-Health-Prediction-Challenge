@@ -45,14 +45,42 @@ def process_data(train, test):
     y = le.fit_transform(train['Target'])
     df = pd.concat([train.drop('Target', axis=1), test], axis=0).reset_index(drop=True)
     
-    # Feature Engineering de base
-    df['business_expenses'] = df['business_expenses'].replace(0, 1)
+    # --- Feature Engineering Amélioré (Inspiré de train_lgbm.py) ---
+    
+    # 1. Imputation Logique ("No" par défaut pour les colonnes boolean-like)
+    logical_cols = [
+        'has_debit_card', 'has_mobile_money', 'has_loan_account', 'has_insurance',
+        'medical_insurance', 'funeral_insurance', 'motor_vehicle_insurance',
+        'has_internet_banking', 'has_credit_card'
+    ]
+    for col in logical_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna("No")
+
+    # 2. Remplissage des inconnus
+    obj_cols = df.select_dtypes(include=['object']).columns
+    df[obj_cols] = df[obj_cols].fillna("Unknown")
+
+    # 3. Features Financières Clés
+    df['business_expenses'] = df['business_expenses'].replace(0, 1) # Éviter div par zéro
     df['income_to_expense'] = df['personal_income'] / df['business_expenses']
+    
+    if 'personal_income' in df.columns and 'owner_age' in df.columns:
+        df['income_per_age'] = df['personal_income'] / (df['owner_age'].replace(0, 1))
+
+    # 4. Financial Access Score
+    yes_vals = ['Yes', 'Have now', 'have now']
+    access_cols = ['has_loan_account', 'has_internet_banking', 'has_debit_card', 'has_mobile_money']
+    valid_cols = [c for c in access_cols if c in df.columns]
+    if valid_cols:
+        df['financial_access_score'] = df[valid_cols].isin(yes_vals).sum(axis=1)
+
+    # 5. Log Transform
     for col in ['personal_income', 'business_expenses', 'business_turnover']:
         df[f'log_{col}'] = np.log1p(df[col])
 
-    # Likert Mapping pour la psychométrie
-    likert_map = {'strongly disagree': 1, 'disagree': 2, 'neutral': 3, 
+    # 6. Psychométrie (Likert Mapping)
+    likert_map = {'strongly disagree': 1, 'disagree': 2, 'neutral': 3,
                   'neither agree nor disagree': 3, 'agree': 4, 'strongly agree': 5, 'nan': 3}
     att_cols = [c for c in df.columns if 'attitude' in c.lower() or 'perception' in c.lower()]
     if att_cols:
@@ -60,6 +88,7 @@ def process_data(train, test):
             df[col] = df[col].astype(str).str.lower().str.strip().map(likert_map).fillna(3)
         df['psych_mean'] = df[att_cols].mean(axis=1)
 
+    # 7. Nettoyage Catégoriel Final
     cat_cols = df.select_dtypes(include=['object']).columns.tolist()
     for col in cat_cols:
         df[col] = df[col].astype(str).replace(['nan', 'None'], 'missing')
