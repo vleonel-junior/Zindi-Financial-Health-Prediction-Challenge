@@ -4,7 +4,7 @@ import numpy as np
 import warnings
 import gc
 import optuna 
-from tqdm.auto import tqdm # Pour les barres de progression
+from tqdm.auto import tqdm
 
 # Modèles
 from catboost import CatBoostClassifier
@@ -18,10 +18,10 @@ from sklearn.preprocessing import LabelEncoder, OrdinalEncoder
 from sklearn.metrics import f1_score
 from sklearn.utils.class_weight import compute_class_weight
 
-# Désactivation des warnings polluants
+# Désactivation des warnings
 warnings.filterwarnings('ignore', category=SyntaxWarning)
 warnings.filterwarnings('ignore')
-optuna.logging.set_verbosity(optuna.logging.WARNING) # Réduit le log répétitif d'Optuna
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 # --- CONSTANTES ---
 SEED = 42
@@ -33,7 +33,7 @@ USE_GPU = True
 # %% --- 2. FONCTIONS UTILITAIRES ---
 
 class tqdm_callback:
-    """Callback pour ajouter une barre tqdm à Optuna"""
+    """Barre de progression pour Optuna"""
     def __init__(self, n_trials):
         self.pbar = tqdm(total=n_trials, desc="Optimisation")
     def __call__(self, study, trial):
@@ -45,13 +45,13 @@ def process_data(train, test):
     y = le.fit_transform(train['Target'])
     df = pd.concat([train.drop('Target', axis=1), test], axis=0).reset_index(drop=True)
     
-    # Ratios et Log
+    # Feature Engineering de base
     df['business_expenses'] = df['business_expenses'].replace(0, 1)
     df['income_to_expense'] = df['personal_income'] / df['business_expenses']
     for col in ['personal_income', 'business_expenses', 'business_turnover']:
         df[f'log_{col}'] = np.log1p(df[col])
 
-    # Likert Mapping
+    # Likert Mapping pour la psychométrie
     likert_map = {'strongly disagree': 1, 'disagree': 2, 'neutral': 3, 
                   'neither agree nor disagree': 3, 'agree': 4, 'strongly agree': 5, 'nan': 3}
     att_cols = [c for c in df.columns if 'attitude' in c.lower() or 'perception' in c.lower()]
@@ -66,7 +66,7 @@ def process_data(train, test):
         
     return df.iloc[:len(train)], df.iloc[len(train):], y, le, cat_cols
 
-# %% --- 3. TUNING AVEC VISUALISATION ---
+# %% --- 3. TUNING (AVEC NOMS DE PARAMÈTRES CORRIGÉS) ---
 
 def tune_models(X, y, cat_features, class_weights):
     weights_dict = dict(zip(np.unique(y), class_weights))
@@ -77,12 +77,22 @@ def tune_models(X, y, cat_features, class_weights):
     # --- CATBOOST ---
     print("\n" + "="*50 + "\n🔥 ÉTAPE 1: OPTIMISATION CATBOOST\n" + "="*50)
     def obj_cb(trial):
-        params = {'iterations': 1000, 'learning_rate': trial.suggest_float('lr', 0.01, 0.1, log=True),
-                  'depth': trial.suggest_int('depth', 4, 8), 'l2_leaf_reg': trial.suggest_float('l2', 1, 10),
-                  'task_type': 'GPU' if USE_GPU else 'CPU', 'class_weights': list(class_weights),
-                  'random_seed': SEED, 'verbose': 0}
+        params = {
+            'iterations': 1000,
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1, log=True),
+            'depth': trial.suggest_int('depth', 4, 8),
+            'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 1, 10),
+            'task_type': 'GPU' if USE_GPU else 'CPU',
+            'class_weights': list(class_weights),
+            'random_seed': SEED, 'verbose': 0
+        }
         skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=SEED)
-        return np.mean([f1_score(y.iloc[v], CatBoostClassifier(**params).fit(X.iloc[t], y.iloc[t], cat_features=cat_features, early_stopping_rounds=50).predict(X.iloc[v]), average='weighted') for t, v in skf.split(X, y)])
+        scores = []
+        for t, v in skf.split(X, y):
+            m = CatBoostClassifier(**params)
+            m.fit(X.iloc[t], y.iloc[t], cat_features=cat_features, early_stopping_rounds=50)
+            scores.append(f1_score(y.iloc[v], m.predict(X.iloc[v]), average='weighted'))
+        return np.mean(scores)
 
     study_cb = optuna.create_study(direction='maximize')
     study_cb.optimize(obj_cb, n_trials=MAX_TRIALS, timeout=MAX_TIME, callbacks=[tqdm_callback(MAX_TRIALS)])
@@ -90,9 +100,14 @@ def tune_models(X, y, cat_features, class_weights):
     # --- XGBOOST ---
     print("\n" + "="*50 + "\n🚀 ÉTAPE 2: OPTIMISATION XGBOOST\n" + "="*50)
     def obj_xgb(trial):
-        params = {'n_estimators': 1000, 'learning_rate': trial.suggest_float('lr', 0.01, 0.1, log=True),
-                  'max_depth': trial.suggest_int('depth', 3, 9), 'subsample': trial.suggest_float('sub', 0.6, 1.0),
-                  'tree_method': 'hist', 'device': 'cuda' if USE_GPU else 'cpu', 'random_state': SEED}
+        params = {
+            'n_estimators': 1000,
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1, log=True),
+            'max_depth': trial.suggest_int('max_depth', 3, 9),
+            'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+            'tree_method': 'hist', 'device': 'cuda' if USE_GPU else 'cpu',
+            'random_state': SEED
+        }
         skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=SEED)
         scores = []
         for t, v in skf.split(X_num, y):
@@ -107,60 +122,88 @@ def tune_models(X, y, cat_features, class_weights):
     # --- LIGHTGBM ---
     print("\n" + "="*50 + "\n💡 ÉTAPE 3: OPTIMISATION LIGHTGBM\n" + "="*50)
     def obj_lgbm(trial):
-        params = {'n_estimators': 1000, 'learning_rate': trial.suggest_float('lr', 0.01, 0.1, log=True),
-                  'num_leaves': trial.suggest_int('leaves', 20, 60), 'device': 'gpu' if USE_GPU else 'cpu',
-                  'class_weight': 'balanced', 'random_state': SEED, 'verbose': -1}
+        params = {
+            'n_estimators': 1000,
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1, log=True),
+            'num_leaves': trial.suggest_int('num_leaves', 20, 60),
+            'device': 'gpu' if USE_GPU else 'cpu',
+            'class_weight': 'balanced', 'random_state': SEED, 'verbose': -1
+        }
         skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=SEED)
-        return np.mean([f1_score(y.iloc[v], LGBMClassifier(**params).fit(X_num.iloc[t], y.iloc[t]).predict(X_num.iloc[v]), average='weighted') for t, v in skf.split(X_num, y)])
+        scores = []
+        for t, v in skf.split(X_num, y):
+            m = LGBMClassifier(**params)
+            m.fit(X_num.iloc[t], y.iloc[t])
+            scores.append(f1_score(y.iloc[v], m.predict(X_num.iloc[v]), average='weighted'))
+        return np.mean(scores)
 
     study_lgbm = optuna.create_study(direction='maximize')
     study_lgbm.optimize(obj_lgbm, n_trials=MAX_TRIALS, timeout=MAX_TIME, callbacks=[tqdm_callback(MAX_TRIALS)])
 
     return study_cb.best_params, study_xgb.best_params, study_lgbm.best_params
 
-# %% --- 4. EXECUTION ---
+# %% --- 4. EXECUTION ET STACKING ---
 
 if __name__ == "__main__":
+    # Chargement
     train_raw, test_raw = pd.read_csv('Train.csv'), pd.read_csv('Test.csv')
     X, X_test, y, le, cat_cols = process_data(train_raw, test_raw)
     y_series = pd.Series(y)
-    class_weights = compute_class_weight('balanced', classes=np.unique(y), y=y)
     
-    # Tuning avec barres de progression
+    # Calcul des poids de classes
+    class_weights = compute_class_weight('balanced', classes=np.unique(y), y=y)
+    weights_dict = dict(zip(np.unique(y), class_weights))
+
+    # 1. Tuning
     bp_cb, bp_xgb, bp_lgbm = tune_models(X, y_series, cat_cols, class_weights)
     
-    # Entraînement Final (Cross-Validation)
+    # 2. Entraînement Final (Cross-Validation)
     print("\n" + "="*50 + "\n🏗️ ÉTAPE 4: ENTRAÎNEMENT DE L'ENSEMBLE (5-FOLDS)\n" + "="*50)
     skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
-    oof_stack = np.zeros((len(X), 9))
+    
+    oof_stack = np.zeros((len(X), 9)) # 3 modèles * 3 classes
     test_stack = np.zeros((len(X_test), 9))
     
+    # Encodage numérique pour XGB/LGBM
     oe = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
     X_num, X_test_num = X.copy(), X_test.copy()
-    X_num[cat_cols] = oe.fit_transform(X[cat_cols]); X_test_num[cat_cols] = oe.transform(X_test[cat_cols])
+    X_num[cat_cols] = oe.fit_transform(X[cat_cols].astype(str))
+    X_test_num[cat_cols] = oe.transform(X_test[cat_cols].astype(str))
 
     for f, (t_idx, v_idx) in enumerate(tqdm(skf.split(X, y), total=N_FOLDS, desc="Folds CV")):
-        # CB / XGB / LGBM (mêmes paramètres que précédemment)
-        m_cb = CatBoostClassifier(**bp_cb, iterations=2000, task_type='GPU' if USE_GPU else 'CPU', class_weights=list(class_weights), verbose=0)
+        # CatBoost
+        m_cb = CatBoostClassifier(**bp_cb, iterations=2000, task_type='GPU' if USE_GPU else 'CPU', 
+                                  class_weights=list(class_weights), verbose=0)
         m_cb.fit(X.iloc[t_idx], y_series.iloc[t_idx], cat_features=cat_cols)
         oof_stack[v_idx, 0:3] = m_cb.predict_proba(X.iloc[v_idx])
         test_stack[:, 0:3] += m_cb.predict_proba(X_test) / N_FOLDS
         
+        # XGBoost
         m_xgb = XGBClassifier(**bp_xgb, n_estimators=2000, tree_method='hist', device='cuda' if USE_GPU else 'cpu')
-        m_xgb.fit(X_num.iloc[t_idx], y_series.iloc[t_idx])
+        m_xgb.fit(X_num.iloc[t_idx], y_series.iloc[t_idx], sample_weight=y_series.iloc[t_idx].map(weights_dict))
         oof_stack[v_idx, 3:6] = m_xgb.predict_proba(X_num.iloc[v_idx])
         test_stack[:, 3:6] += m_xgb.predict_proba(X_test_num) / N_FOLDS
         
+        # LightGBM
         m_lgbm = LGBMClassifier(**bp_lgbm, n_estimators=2000, class_weight='balanced')
         m_lgbm.fit(X_num.iloc[t_idx], y_series.iloc[t_idx])
         oof_stack[v_idx, 6:9] = m_lgbm.predict_proba(X_num.iloc[v_idx])
         test_stack[:, 6:9] += m_lgbm.predict_proba(X_test_num) / N_FOLDS
 
-    # META-LEARNER FINAL
+    # 3. Meta-Learner Final
     print("\n" + "="*50 + "\n🎯 ÉTAPE 5: MÉTA-MODÈLE & GÉNÉRATION CSV\n" + "="*50)
     meta_model = LogisticRegression(class_weight='balanced', max_iter=1000)
     meta_model.fit(oof_stack, y)
     
     final_preds = meta_model.predict(test_stack)
-    pd.DataFrame({"ID": test_raw["ID"], "Target": le.inverse_transform(final_preds)}).to_csv("submission_master.csv", index=False)
-    print("🚀 Fichier 'submission_master.csv' prêt !")
+    
+    # Soumission
+    submission = pd.DataFrame({
+        "ID": test_raw["ID"],
+        "Target": le.inverse_transform(final_preds)
+    })
+    submission.to_csv("submission_master_final.csv", index=False)
+    
+    print("✅ Succès ! Fichier 'submission_master_final.csv' généré.")
+    print("\nDistribution des prédictions :")
+    print(submission['Target'].value_counts(normalize=True))
