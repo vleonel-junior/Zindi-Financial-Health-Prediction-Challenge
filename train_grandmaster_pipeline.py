@@ -1,5 +1,5 @@
 # %% --- 1. INSTALLATION ET IMPORTS ---
-!pip install tabpfn --quiet
+# !pip install tabpfn --quiet
 
 import pandas as pd
 import numpy as np
