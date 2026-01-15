@@ -36,13 +36,13 @@ def optimize_hyperparameters(X, y):
     )
     
     # Randomized Search
-    # n_iter=150 means we test 150 random combinations from the intervals
+    # n_iter=50 means we test 50 random combinations from the intervals
     search = RandomizedSearchCV(
         estimator=estimator,
         param_distributions=param_dist,
-        n_iter=150, 
+        n_iter=50, 
         cv=3,
-        scoring='neg_log_loss',
+        scoring='f1_macro', # OPTIMIZE FOR F1-SCORE
         verbose=1,
         n_jobs=-1, # Use all cores
         random_state=42
@@ -51,7 +51,7 @@ def optimize_hyperparameters(X, y):
     search.fit(X, y)
     
     print(f"\nBest Parameters found: {search.best_params_}")
-    print(f"Best Log Loss Score: {-search.best_score_:.4f}")
+    print(f"Best F1-Macro Score: {search.best_score_:.4f}")
     
     return search.best_params_
 
@@ -92,7 +92,7 @@ def main():
     # Ensure fixed params are present
     best_params.update({
         'objective': 'multiclass',
-        'metric': 'multi_logloss',
+        'metric': 'multi_logloss', # Internal objective remains logloss for stability
         'boosting_type': 'gbdt',
         'random_state': 42,
         'verbosity': -1,
@@ -106,7 +106,8 @@ def main():
     oof_preds = np.zeros((X_train.shape[0], len(le_target.classes_)))
     test_preds = np.zeros((X_test.shape[0], len(le_target.classes_)))
     
-    scores = []
+    scores_logloss = []
+    scores_f1 = []
     
     print(f"\nTraining LightGBM with {N_SPLITS} folds using optimal parameters...")
     
@@ -129,18 +130,22 @@ def main():
         )
         
         val_pred_proba = clf.predict_proba(X_val)
+        val_preds = np.argmax(val_pred_proba, axis=1)
         oof_preds[val_idx] = val_pred_proba
         
         loss = log_loss(y_val, val_pred_proba)
-        acc = accuracy_score(y_val, np.argmax(val_pred_proba, axis=1))
-        scores.append(loss)
+        f1 = f1_score(y_val, val_preds, average='macro')
         
-        print(f"Fold {fold+1} - Log Loss: {loss:.4f} - Acc: {acc:.4f}")
+        scores_logloss.append(loss)
+        scores_f1.append(f1)
+        
+        print(f"Fold {fold+1} - Log Loss: {loss:.4f} - F1 Macro: {f1:.4f}")
         
         # Predict on Test
         test_preds += clf.predict_proba(X_test) / N_SPLITS
         
-    print(f"\nMean Log Loss: {np.mean(scores):.4f}")
+    print(f"\nMean Log Loss: {np.mean(scores_logloss):.4f}")
+    print(f"Mean F1 Macro: {np.mean(scores_f1):.4f}")
     
     # 5. Create Submission
     submission = pd.DataFrame(test_preds, columns=le_target.classes_)
