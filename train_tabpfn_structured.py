@@ -67,8 +67,10 @@ def main():
     if 'is_train' in test_proc.columns:
         test_proc = test_proc.drop(columns=['is_train'])
         
+    # Capture IDs from the processed dataframe to ensure alignment
+    test_ids = test_proc['ID'].values
+    
     X_test = test_proc.drop(columns=['ID', target_col], errors='ignore')
-    test_ids = test['ID'] # Original IDs
     
     # Encode Target (Strings -> Integers) for Scikit-Learn compatibility
     le_target = LabelEncoder()

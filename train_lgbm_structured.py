@@ -71,7 +71,7 @@ def main():
     train_proc, test_proc = preprocess_data(train_struc, test_struc)
     
     print("\n--- Step 3: Encoding & Scaling ---")
-    X_train, y_train, X_test, le_target, scaler = encode_and_scale(train_proc, test_proc)
+    X_train, y_train, X_test, le_target, scaler, train_ids, test_ids = encode_and_scale(train_proc, test_proc)
     
     print(f"\nFinal Training Shape: {X_train.shape}")
     print(f"Final Test Shape: {X_test.shape}")
@@ -150,7 +150,7 @@ def main():
     
     # 5. Create Submission
     submission = pd.DataFrame(test_preds, columns=le_target.classes_)
-    submission['ID'] = test['ID'] # Ensure ID is correct
+    submission['ID'] = test_ids # Use extracted IDs to match X_test row order
     
     # Reorder columns to match SampleSubmission format
     cols = ['ID'] + list(le_target.classes_)

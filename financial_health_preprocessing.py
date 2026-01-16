@@ -294,5 +294,9 @@ def encode_and_scale(train_df, test_df):
     X_train = all_data[all_data['is_train'] == 1].drop(columns=['ID', 'is_train'])
     X_test = all_data[all_data['is_train'] == 0].drop(columns=['ID', 'is_train'])
     
+    # Capture IDs to ensure alignment
+    train_ids = all_data[all_data['is_train'] == 1]['ID'].values
+    test_ids = all_data[all_data['is_train'] == 0]['ID'].values
+    
     # Vérifier alignement ID si besoin, mais ici on retourne les matrices X
-    return X_train, y_train, X_test, le, scaler
+    return X_train, y_train, X_test, le, scaler, train_ids, test_ids
