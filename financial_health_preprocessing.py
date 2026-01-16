@@ -69,8 +69,16 @@ def structured_data(train_df, test_df=None):
         
     # Séparer à nouveau Train et Test
     if test_df is not None:
-        train_structured = all_data[~all_data['Target'].isnull()].copy()
-        test_structured = all_data[all_data['Target'].isnull()].drop(columns=['Target']).copy()
+        # Robust split by length (index) to ensure Test set size is preserved
+        # (Target.isnull() is unsafe if Train has missing targets)
+        n_train = len(train_df)
+        train_structured = all_data.iloc[:n_train].copy()
+        test_structured = all_data.iloc[n_train:].copy()
+        
+        # Remove Target from test if present (it was added as nan placeholder)
+        if 'Target' in test_structured.columns:
+            test_structured = test_structured.drop(columns=['Target'])
+            
         return train_structured, test_structured
     else:
         return all_data
