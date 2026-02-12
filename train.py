@@ -337,6 +337,7 @@ def run_cv_training(model_type, X, y, X_test):
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     oof_preds = np.zeros((len(X), 3)) 
     test_preds = np.zeros((len(X_test), 3))
+    best_iters = []
     
     for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
         print(f"\n>>> {model_type.upper()} - Fold {fold+1}")
@@ -347,11 +348,13 @@ def run_cv_training(model_type, X, y, X_test):
             model = train_catboost(X_tr, y_tr, X_val, y_val, cat_cols)
             oof_preds[val_idx] = model.predict_proba(X_val)
             test_preds += model.predict_proba(X_test) / 5
+            best_iters.append(model.get_best_iteration())
             
         elif model_type == 'lgbm':
             model = train_lgbm(X_tr, y_tr, X_val, y_val)
             oof_preds[val_idx] = model.predict_proba(X_val)
             test_preds += model.predict_proba(X_test) / 5
+            best_iters.append(model.best_iteration_)
             
         elif model_type == 'tabpfn':
             # Encodage si TabPFN Standard
@@ -371,6 +374,54 @@ def run_cv_training(model_type, X, y, X_test):
             test_preds += model.predict_proba(X_test_tab) / 5
         
         gc.collect() # Libère la RAM entre les folds
+        
+    # --- Entraînement sur le FULL DATA ---
+    print(f"\n>>> {model_type.upper()} - Final Training on FULL DATA")
+    if model_type == 'catboost':
+        avg_iter = int(np.mean(best_iters))
+        full_model = CatBoostClassifier(
+            iterations=avg_iter,
+            learning_rate=0.05,
+            depth=6,
+            loss_function='MultiClass',
+            eval_metric='TotalF1',
+            random_seed=42,
+            verbose=100
+        )
+        full_model.fit(X, y, cat_features=cat_cols)
+        full_pred = full_model.predict_proba(X_test)
+        
+    elif model_type == 'lgbm':
+        avg_iter = int(np.mean(best_iters))
+        full_model = LGBMClassifier(
+            n_estimators=avg_iter,
+            learning_rate=0.05,
+            num_leaves=31,
+            objective='multiclass',
+            metric='multi_logloss',
+            random_state=42,
+            n_jobs=-1
+        )
+        full_model.fit(X, y)
+        full_pred = full_model.predict_proba(X_test)
+        
+    elif model_type == 'tabpfn':
+        if tab_encoder:
+            X_full_tab = X.copy()
+            X_full_tab[cat_cols] = tab_encoder.transform(X_full_tab[cat_cols])
+            X_full_tab = X_full_tab.astype(np.float32)
+            X_test_tab = X_test.copy()
+            X_test_tab[cat_cols] = tab_encoder.transform(X_test_tab[cat_cols])
+            X_test_tab = X_test_tab.astype(np.float32)
+        else:
+            X_full_tab = X
+            X_test_tab = X_test
+            
+        full_model = train_tabpfn(X_full_tab, y)
+        full_pred = full_model.predict_proba(X_test_tab)
+
+    # On combine les prédictions (50% CV Ensemble, 50% Full Model)
+    test_preds = (test_preds + full_pred) / 2
         
     return oof_preds, test_preds
 
