@@ -361,7 +361,7 @@ def train_tabpfn_balanced(X_train, y_train):
     )
     X_train_sm, y_train_sm = smote.fit_resample(X_train, y_train)
     
-    model = TabPFNClassifier(device=device, N_ensemble_configurations=8)
+    model = TabPFNClassifier(device=device)
     model.fit(X_train_sm, y_train_sm)
     return model
 
