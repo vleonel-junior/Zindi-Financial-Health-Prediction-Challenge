@@ -514,6 +514,11 @@ oof_ensemble = (oof_cb + oof_lgb + oof_tab) / 3
 thresh_ensemble = optimize_thresholds(y, oof_ensemble)
 
 # ==========================================
+# MAPPING INVERSE POUR LES SOUMISSIONS
+# ==========================================
+inv_map = {0: 'Low', 1: 'Medium', 2: 'High'}
+
+# ==========================================
 # SOUMISSIONS
 # ==========================================
 
