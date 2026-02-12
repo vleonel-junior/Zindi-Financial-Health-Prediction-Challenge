@@ -327,7 +327,7 @@ def train_tabpfn(X_train, y_train):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Entraînement TabPFN sur : {device}")
 
-    model = TabPFNClassifier(device=device, N_ensemble_configurations=32)
+    model = TabPFNClassifier(device=device)
     
     model.fit(X_train, y_train)
     return model
