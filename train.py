@@ -267,10 +267,30 @@ X = train_df[features]
 y = train_df['Target']
 X_test = test_df[features]
 
-#%% 18. Entraînement du modèle CatBoost
-from catboost import CatBoostClassifier
+#%% 23. GESTION DU DÉSÉQUILIBRE - VERSION FINALE
 
-def train_catboost(X_train, y_train, X_val, y_val, cat_features):
+from imblearn.over_sampling import SMOTENC
+from sklearn.utils.class_weight import compute_class_weight
+import numpy as np
+
+# ==========================================
+# ÉTAPE 1: Calculer les poids de classes
+# ==========================================
+class_weights = compute_class_weight('balanced', classes=np.unique(y), y=y)
+weight_dict = {0: class_weights[0], 1: class_weights[1], 2: class_weights[2]}
+print(f"\n>>> Poids de classes calculés: {weight_dict}")
+
+# Indices des colonnes catégorielles pour SMOTE
+cat_indices = [X.columns.get_loc(col) for col in cat_cols]
+
+# ==========================================
+# ÉTAPE 2: Fonctions d'entraînement AVEC balancing
+# ==========================================
+
+def train_catboost_balanced(X_train, y_train, X_val, y_val, cat_features):
+    """CatBoost avec sample weights"""
+    sample_weights = y_train.map(weight_dict)
+    
     model = CatBoostClassifier(
         iterations=1000,
         learning_rate=0.05,
@@ -283,20 +303,20 @@ def train_catboost(X_train, y_train, X_val, y_val, cat_features):
     
     model.fit(
         X_train, y_train,
+        sample_weight=sample_weights,
         cat_features=cat_features,
         eval_set=(X_val, y_val),
         early_stopping_rounds=50
     )
     return model
 
-#%% 19. Entraînement du modèle Lightgbm
-from lightgbm import LGBMClassifier
-
-def train_lgbm(X_train, y_train, X_val, y_val):
+def train_lgbm_balanced(X_train, y_train, X_val, y_val):
+    """LightGBM avec class_weight balanced"""
     model = LGBMClassifier(
         n_estimators=1000,
         learning_rate=0.05,
         num_leaves=31,
+        class_weight='balanced',  # ← Clé !
         objective='multiclass',
         metric='multi_logloss',
         random_state=42,
@@ -310,99 +330,125 @@ def train_lgbm(X_train, y_train, X_val, y_val):
     )
     return model
 
-#%% 20. Entraînement du modèle Tabpfn
-import torch
-from tabpfn import TabPFNClassifier
-
-# Utilisation de TabPFNClassifier standard uniquement (AutoML non autorisé)
-AutoTabPFNClassifier = None
-
-# Préparation de l'encodeur pour le TabPFN Standard (qui ne gère pas les strings/categories)
-tab_encoder = None
-if AutoTabPFNClassifier is None:
-    tab_encoder = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
-    tab_encoder.fit(pd.concat([X[cat_cols], X_test[cat_cols]]))
-
-def train_tabpfn(X_train, y_train):
+def train_tabpfn_balanced(X_train, y_train):
+    """TabPFN avec oversampling SMOTE avant fit"""
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"Entraînement TabPFN sur : {device}")
-
-    model = TabPFNClassifier(device=device)
     
-    model.fit(X_train, y_train)
+    # SMOTE pour équilibrer (TabPFN gère mal le déséquilibre natif)
+    smote = SMOTENC(
+        categorical_features=cat_indices,
+        sampling_strategy={2: int(len(y_train[y_train==2]) * 3)},  # Tripler "High"
+        random_state=42,
+        k_neighbors=3
+    )
+    X_train_sm, y_train_sm = smote.fit_resample(X_train, y_train)
+    
+    model = TabPFNClassifier(device=device)
+    model.fit(X_train_sm, y_train_sm)
     return model
 
-#%% 21. Fonction de Cross-Validation
-def run_cv_training(model_type, X, y, X_test):
+# ==========================================
+# ÉTAPE 3: CV avec SMOTE + Class Weights
+# ==========================================
+
+def run_cv_balanced(model_type, X, y, X_test):
+    """
+    Cross-validation avec gestion complète du déséquilibre:
+    - SMOTE léger sur le train de chaque fold
+    - Class weights dans les modèles
+    - Optimisation des seuils sur OOF
+    """
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    oof_preds = np.zeros((len(X), 3)) 
+    oof_preds = np.zeros((len(X), 3))
     test_preds = np.zeros((len(X_test), 3))
     best_iters = []
+    
+    # Initialiser SMOTE (stratégie modérée: doubler "High")
+    smote = SMOTENC(
+        categorical_features=cat_indices,
+        sampling_strategy={2: int(len(y[y==2]) * 2)},
+        random_state=42,
+        k_neighbors=3
+    )
     
     for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
         print(f"\n>>> {model_type.upper()} - Fold {fold+1}")
         X_tr, X_val = X.iloc[train_idx], X.iloc[val_idx]
         y_tr, y_val = y.iloc[train_idx], y.iloc[val_idx]
         
+        # Appliquer SMOTE sur le train uniquement
+        if model_type in ['lgbm', 'catboost']:
+            X_tr_sm, y_tr_sm = smote.fit_resample(X_tr, y_tr)
+            print(f"  SMOTE: {len(y_tr)} → {len(y_tr_sm)} samples")
+            print(f"  Distribution: {np.bincount(y_tr_sm)}")
+        else:
+            X_tr_sm, y_tr_sm = X_tr, y_tr
+        
+        # Entraînement selon le modèle
         if model_type == 'catboost':
-            model = train_catboost(X_tr, y_tr, X_val, y_val, cat_cols)
+            model = train_catboost_balanced(X_tr_sm, y_tr_sm, X_val, y_val, cat_cols)
             oof_preds[val_idx] = model.predict_proba(X_val)
             test_preds += model.predict_proba(X_test) / 5
             best_iters.append(model.get_best_iteration())
             
         elif model_type == 'lgbm':
-            model = train_lgbm(X_tr, y_tr, X_val, y_val)
+            model = train_lgbm_balanced(X_tr_sm, y_tr_sm, X_val, y_val)
             oof_preds[val_idx] = model.predict_proba(X_val)
             test_preds += model.predict_proba(X_test) / 5
             best_iters.append(model.best_iteration_)
             
         elif model_type == 'tabpfn':
-            # Encodage si TabPFN Standard
+            # TabPFN: encoder + SMOTE intégré dans la fonction
             if tab_encoder:
                 X_tr_tab = X_tr.copy(); X_val_tab = X_val.copy(); X_test_tab = X_test.copy()
                 X_tr_tab[cat_cols] = tab_encoder.transform(X_tr_tab[cat_cols])
                 X_val_tab[cat_cols] = tab_encoder.transform(X_val_tab[cat_cols])
                 X_test_tab[cat_cols] = tab_encoder.transform(X_test_tab[cat_cols])
-                # Conversion float32 pour PyTorch
-                X_tr_tab = X_tr_tab.astype(np.float32); X_val_tab = X_val_tab.astype(np.float32)
+                X_tr_tab = X_tr_tab.astype(np.float32)
+                X_val_tab = X_val_tab.astype(np.float32)
                 X_test_tab = X_test_tab.astype(np.float32)
             else:
                 X_tr_tab, X_val_tab, X_test_tab = X_tr, X_val, X_test
-
-            model = train_tabpfn(X_tr_tab, y_tr)
+            
+            model = train_tabpfn_balanced(X_tr_tab, y_tr)
             oof_preds[val_idx] = model.predict_proba(X_val_tab)
             test_preds += model.predict_proba(X_test_tab) / 5
         
-        gc.collect() # Libère la RAM entre les folds
-        
-    # --- Entraînement sur le FULL DATA ---
+        gc.collect()
+    
+    # --- Entraînement FULL DATA avec SMOTE ---
     print(f"\n>>> {model_type.upper()} - Final Training on FULL DATA")
-    if model_type == 'catboost':
-        avg_iter = int(np.mean(best_iters))
-        full_model = CatBoostClassifier(
-            iterations=avg_iter,
-            learning_rate=0.05,
-            depth=6,
-            loss_function='MultiClass',
-            eval_metric='TotalF1',
-            random_seed=42,
-            verbose=100
-        )
-        full_model.fit(X, y, cat_features=cat_cols)
-        full_pred = full_model.predict_proba(X_test)
+    
+    if model_type in ['lgbm', 'catboost']:
+        X_full_sm, y_full_sm = smote.fit_resample(X, y)
+        avg_iter = int(np.mean(best_iters)) if best_iters else 500
         
-    elif model_type == 'lgbm':
-        avg_iter = int(np.mean(best_iters))
-        full_model = LGBMClassifier(
-            n_estimators=avg_iter,
-            learning_rate=0.05,
-            num_leaves=31,
-            objective='multiclass',
-            metric='multi_logloss',
-            random_state=42,
-            n_jobs=-1
-        )
-        full_model.fit(X, y)
+        if model_type == 'catboost':
+            sample_weights = y_full_sm.map(weight_dict)
+            full_model = CatBoostClassifier(
+                iterations=avg_iter,
+                learning_rate=0.05,
+                depth=6,
+                loss_function='MultiClass',
+                random_seed=42,
+                verbose=100
+            )
+            full_model.fit(X_full_sm, y_full_sm, 
+                          sample_weight=sample_weights,
+                          cat_features=cat_cols)
+            
+        elif model_type == 'lgbm':
+            full_model = LGBMClassifier(
+                n_estimators=avg_iter,
+                learning_rate=0.05,
+                num_leaves=31,
+                class_weight='balanced',
+                objective='multiclass',
+                random_state=42,
+                n_jobs=-1
+            )
+            full_model.fit(X_full_sm, y_full_sm)
+        
         full_pred = full_model.predict_proba(X_test)
         
     elif model_type == 'tabpfn':
@@ -416,49 +462,130 @@ def run_cv_training(model_type, X, y, X_test):
         else:
             X_full_tab = X
             X_test_tab = X_test
-            
-        full_model = train_tabpfn(X_full_tab, y)
-        full_pred = full_model.predict_proba(X_test_tab)
-
-    # On combine les prédictions (50% CV Ensemble, 50% Full Model)
-    test_preds = (test_preds + full_pred) / 2
         
+        full_model = train_tabpfn_balanced(X_full_tab, y)
+        full_pred = full_model.predict_proba(X_test_tab)
+    
+    # Moyenne CV + Full
+    test_preds = (test_preds + full_pred) / 2
+    
     return oof_preds, test_preds
 
-#%% 22. Exécution et Soumissions Individuelles
+# ==========================================
+# ÉTAPE 4: Optimisation des seuils de décision
+# ==========================================
 
-# 1. Entraînement et prédictions
-oof_cb, pred_cb = run_cv_training('catboost', X, y, X_test)
-oof_lgb, pred_lgb = run_cv_training('lgbm', X, y, X_test)
-oof_tab, pred_tab = run_cv_training('tabpfn', X, y, X_test)
+def optimize_thresholds(y_true, y_probs):
+    """
+    Trouve les meilleurs seuils pour maximiser F1 weighted
+    (crucial pour bien capturer la classe "High")
+    """
+    best_f1 = 0
+    best_thresholds = None
+    
+    # Grid search (plus fin pour "High")
+    for t_high in np.arange(0.05, 0.40, 0.02):  # Seuil bas pour capturer "High"
+        for t_medium in np.arange(0.20, 0.60, 0.05):
+            preds = []
+            for probs in y_probs:
+                if probs[2] > t_high:
+                    preds.append(2)
+                elif probs[1] > t_medium:
+                    preds.append(1)
+                else:
+                    preds.append(0)
+            
+            f1 = f1_score(y_true, preds, average='weighted')
+            if f1 > best_f1:
+                best_f1 = f1
+                best_thresholds = [t_medium, t_high]
+    
+    print(f"\n>>> Seuils optimaux: Medium={best_thresholds[0]:.3f}, High={best_thresholds[1]:.3f}")
+    print(f"    F1 Score atteint: {best_f1:.4f}")
+    return best_thresholds
 
-# 2. Évaluation des performances locales
-print("\n--- Scores de Validation (OOF) ---")
+def predict_with_thresholds(probs, thresholds):
+    """Applique les seuils optimisés"""
+    t_medium, t_high = thresholds
+    preds = []
+    for p in probs:
+        if p[2] > t_high:
+            preds.append(2)
+        elif p[1] > t_medium:
+            preds.append(1)
+        else:
+            preds.append(0)
+    return np.array(preds)
+
+# ==========================================
+# ÉTAPE 5: EXÉCUTION COMPLÈTE
+# ==========================================
+
+print("\n" + "="*60)
+print("🚀 ENTRAÎNEMENT AVEC GESTION DU DÉSÉQUILIBRE")
+print("="*60)
+
+# Entraîner les 3 modèles
+oof_cb, pred_cb = run_cv_balanced('catboost', X, y, X_test)
+oof_lgb, pred_lgb = run_cv_balanced('lgbm', X, y, X_test)
+oof_tab, pred_tab = run_cv_balanced('tabpfn', X, y, X_test)
+
+# Scores OOF avec seuils par défaut
+print("\n" + "="*60)
+print("📊 SCORES OOF (Seuils par défaut)")
+print("="*60)
 print("CatBoost :", end=" ")
-evaluate_model(y, np.argmax(oof_cb, axis=1))
+score_cb = evaluate_model(y, np.argmax(oof_cb, axis=1))
 print("LightGBM :", end=" ")
-evaluate_model(y, np.argmax(oof_lgb, axis=1))
+score_lgb = evaluate_model(y, np.argmax(oof_lgb, axis=1))
 print("TabPFN   :", end=" ")
-evaluate_model(y, np.argmax(oof_tab, axis=1))
+score_tab = evaluate_model(y, np.argmax(oof_tab, axis=1))
 
-# 3. Fonction pour générer un fichier de soumission proprement
-inv_map = {0: 'Low', 1: 'Medium', 2: 'High'}
+# Optimiser les seuils sur chaque modèle
+print("\n" + "="*60)
+print("🎯 OPTIMISATION DES SEUILS")
+print("="*60)
 
-def save_submission(probs, name):
-    preds_idx = np.argmax(probs, axis=1)
+thresh_cb = optimize_thresholds(y, oof_cb)
+thresh_lgb = optimize_thresholds(y, oof_lgb)
+thresh_tab = optimize_thresholds(y, oof_tab)
+
+# Ensemble avec seuils optimisés
+oof_ensemble = (oof_cb + oof_lgb + oof_tab) / 3
+thresh_ensemble = optimize_thresholds(y, oof_ensemble)
+
+# ==========================================
+# ÉTAPE 6: SOUMISSIONS FINALES
+# ==========================================
+
+def save_submission_with_thresholds(probs, thresholds, name):
+    """Sauvegarde avec seuils optimisés"""
+    preds_idx = predict_with_thresholds(probs, thresholds)
     labels = [inv_map[idx] for idx in preds_idx]
+    
+    # Vérifier la distribution
+    dist = np.bincount(preds_idx, minlength=3) / len(preds_idx)
+    print(f"\n{name} - Distribution prédite:")
+    print(f"  Low: {dist[0]:.1%}, Medium: {dist[1]:.1%}, High: {dist[2]:.1%}")
+    
     sub = pd.DataFrame({'ID': test_df['ID'], 'Target': labels})
-    filename = f'submission_{name}.csv'
+    filename = f'submission_{name}_balanced.csv'
     sub.to_csv(filename, index=False)
-    print(f"Fichier sauvegardé : {filename}")
+    print(f"✅ Fichier sauvegardé: {filename}")
 
-# 4. Génération des fichiers individuels
-save_submission(pred_cb,  "catboost")
-save_submission(pred_lgb, "lgbm")
-save_submission(pred_tab, "tabpfn")
+print("\n" + "="*60)
+print("💾 GÉNÉRATION DES SOUMISSIONS")
+print("="*60)
 
-# 5. Génération de l'ensemble (Moyenne simple)
+# Soumissions individuelles avec seuils
+save_submission_with_thresholds(pred_cb, thresh_cb, "catboost")
+save_submission_with_thresholds(pred_lgb, thresh_lgb, "lgbm")
+save_submission_with_thresholds(pred_tab, thresh_tab, "tabpfn")
+
+# Ensemble final
 final_test_probs = (pred_cb + pred_lgb + pred_tab) / 3
-save_submission(final_test_probs, "ensemble_all")
+save_submission_with_thresholds(final_test_probs, thresh_ensemble, "ensemble_optimized")
 
-print("\n--- Toutes les soumissions sont prêtes ! ---")
+print("\n" + "="*60)
+print("✨ TERMINÉ ! Soumettez 'submission_ensemble_optimized_balanced.csv'")
+print("="*60)
