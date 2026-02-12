@@ -300,7 +300,6 @@ def train_lgbm(X_train, y_train, X_val, y_val):
         objective='multiclass',
         metric='multi_logloss',
         random_state=42,
-        categorical_feature='auto',
         n_jobs=-1
     )
     
@@ -315,12 +314,8 @@ def train_lgbm(X_train, y_train, X_val, y_val):
 import torch
 from tabpfn import TabPFNClassifier
 
-try:
-    from tabpfn_extensions.post_hoc_ensembles.sklearn_interface import AutoTabPFNClassifier
-    print("AutoTabPFNClassifier chargé avec succès.")
-except ImportError:
-    print("L'extension 'tabpfn-extensions' n'est pas installée. Utilisation du TabPFNClassifier standard.")
-    AutoTabPFNClassifier = None
+# Utilisation de TabPFNClassifier standard uniquement (AutoML non autorisé)
+AutoTabPFNClassifier = None
 
 # Préparation de l'encodeur pour le TabPFN Standard (qui ne gère pas les strings/categories)
 tab_encoder = None
@@ -332,10 +327,7 @@ def train_tabpfn(X_train, y_train):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Entraînement TabPFN sur : {device}")
 
-    if AutoTabPFNClassifier is not None:
-        model = AutoTabPFNClassifier(device=device, max_time=300)
-    else:
-        model = TabPFNClassifier(device=device, N_ensemble_configurations=32)
+    model = TabPFNClassifier(device=device, N_ensemble_configurations=32)
     
     model.fit(X_train, y_train)
     return model
