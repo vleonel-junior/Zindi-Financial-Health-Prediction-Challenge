@@ -269,9 +269,22 @@ X_test = test_df[features]
 
 #%% 23. GESTION DU DÉSÉQUILIBRE - VERSION FINALE
 
+# ==========================================
+# IMPORTS NÉCESSAIRES
+# ==========================================
 from imblearn.over_sampling import SMOTENC
 from sklearn.utils.class_weight import compute_class_weight
+from sklearn.metrics import f1_score
+from sklearn.model_selection import StratifiedKFold
 import numpy as np
+import gc
+
+# Imports des modèles (au cas où pas fait avant)
+from catboost import CatBoostClassifier
+from lightgbm import LGBMClassifier
+import lightgbm as lgb
+import torch
+from tabpfn import TabPFNClassifier
 
 # ==========================================
 # ÉTAPE 1: Calculer les poids de classes
